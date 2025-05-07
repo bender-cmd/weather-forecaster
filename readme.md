@@ -81,7 +81,8 @@ Submit the updated project folder containing:
 - Modified `forecast.py`
 - Any additional modules or files you created
 - A brief note if you made architectural decisions or assumptions
-- Ensure all your work is committed and pushed to a GitHub branch `/submissions/<your_name>` with meaningful commit messages and added documentation
+- Ensure all your work is committed and pushed to a GitHub branch `/submissions/<your_name>` with meaningful commit messages and added documentation.
+- Please submit the project to your own repo, and supply luan with the repo link
 
 Good luck!
 
