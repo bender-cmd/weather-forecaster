@@ -16,8 +16,8 @@ You need to get your AI to successfully predict the temperature in degrees Celsi
 ## 📁 Provided Files
 
 - `forecast.py`: Initial (buggy and limited) implementation using Prophet
-- `weather.csv`: 365 days of mock weather data
-- `weather_plot.png`: Visualization of Gauteng, South Africa weather trends for 2023
+- `weather.csv`: 365 days of mock weather data for Gauteng South Africa 2023
+- `weather_plot.png`: Visualization of Gauteng, South Africa weather trends for 2023 
 
 > The weather data used in this assessment reflects **Gauteng, South Africa's seasonal patterns for 2023**, including temperature and humidity.
 
