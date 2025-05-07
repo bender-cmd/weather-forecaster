@@ -9,7 +9,7 @@ This assessment tests your:
 - **Code optimization** and refactoring skills
 - Skill in **bug fixing and feature extension**
 
-You need to get your AI to successfully predict the temperature in degrees Celsius two days into the future.
+You need to get your AI to successfully predict the temperature in degrees Celsius 7 days into the future.
 
 ---
 
@@ -38,7 +38,7 @@ You need to get your AI to successfully predict the temperature in degrees Celsi
 ### 🌟 Feature Additions
 - [ ] Add CLI arguments using `argparse`:
   - `--input`: path to input CSV file
-  - `--periods`: number of days to forecast (default: 30)
+  - `--periods`: number of days to forecast (default: 7)
   - `--output`: optional path to save forecast CSV
 - [ ] Use humidity as a regressor in your forecast 
 - [ ] Add plotting of forecast using `matplotlib` or `plotly`
