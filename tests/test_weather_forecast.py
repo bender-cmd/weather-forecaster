@@ -1,8 +1,13 @@
+#!/usr/bin/env python3
+
 import pytest
 import pandas as pd
-from pathlib import Path
-from forecast import WeatherForecaster
+import sys
+import os
 
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+from forecast import WeatherForecaster
 
 @pytest.fixture
 def sample_df():
@@ -10,7 +15,7 @@ def sample_df():
     dates = pd.date_range(start='2024-01-01', periods=60)
     data = {
         'ds': dates,
-        'temperature_celsius': 20 + (dates.dayofyear % 10),  # seasonal-like pattern
+        'y': 20 + (dates.dayofyear % 10),  # seasonal-like pattern
         'humidity': 50 + (dates.dayofyear % 5),
         'pressure': 1010 + (dates.dayofyear % 3)
     }
@@ -31,7 +36,7 @@ def test_load_data(tmp_path):
 
     assert 'ds' in df.columns
     assert 'y' in df.columns
-    assert len(df) == 10
+    assert len(df) == 10  # why 10?
     assert pd.api.types.is_datetime64_any_dtype(df['ds'])
 
 
