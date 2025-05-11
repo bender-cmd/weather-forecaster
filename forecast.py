@@ -163,9 +163,9 @@ class WeatherForecaster:
 
             # Perform Cross-validation, Dynamic configuration based on data size
             if total_days <= 366:  # ~1 year of data
-                initial = '335 days'  # Train on first 300 days (~10 months)
+                initial = '300 days'  # Train on first 300 days (~10 months)
                 period = '30 days'  # Create monthly validation folds
-                horizon = '7 days'  # Validate on last 30 days
+                horizon = '30 days'  # Validate on last 30 days
             else:
                 initial = '365 days'  # Full year base
                 period = '90 days'
@@ -353,10 +353,13 @@ class WeatherForecaster:
 
             plt.xlabel('Date')
             plt.ylabel('Temperature (°C)')
-            plt.title(f'Forecast Covering Last {2 * last_n_days} Days')
+            plt.title(f'Forecast For Next {last_n_days} Days')
             plt.legend()
             plt.grid(True)
             plt.tight_layout()
+
+            plt.gca().xaxis.set_major_locator(plt.MaxNLocator(nbins=6))  # avoid overlap of labels
+
             plt.show()
 
         if plot_components:
