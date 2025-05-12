@@ -1,84 +1,111 @@
 #!/usr/bin/env python3
 """
-Weather Temperature Forecasting with Prophet
+Weather Temperature Forecasting with Prophet.
 
-Usage: forecast.py --input <file.csv> [--output <forecast.csv>] [--periods <days>] [--use-regressor [<regressor>]] [
---plot-components] [--no-tuning] [--trials]
-        forecast.py (-h | --help)
+Usage:
+    forecast.py --input <file.csv> [--output <forecast.csv>] [--periods <days>]
+                [--use-regressor [<regressor>...]] [--plot-components]
+                [--no-tuning] [--trials <n>]
+    forecast.py (-h | --help)
 
 Options:
-  --input <file.csv>                Path to input CSV (required).
-  --output <forecast.csv>           Save forecast to this file [default: None].
-  --periods <days>                  Days to forecast [default: 7].
-  --use-regressor <regressor>       Regressors to use [default: humidity, pressure].
-  -h --help                         Show this screen.
-  --plot-components                 Whether to show component plots.
-  --no-tuning                       Whether to skip hyperparameter tuning
-  --trials                          Number of hyperparameter optimization trials
+    --input <file.csv>          Path to input CSV (required).
+    --output <forecast.csv>     Save forecast to this file [default: None].
+    --periods <days>           Days to forecast [default: 7].
+    --use-regressor <regressor> Regressors to use [default: humidity, pressure].
+    --plot-components           Show component plots.
+    --no-tuning                Skip hyperparameter tuning.
+    --trials <n>               Number of hyperparameter trials [default: 30].
+    -h --help                  Show this help.
 """
 
 import argparse
+import logging
 import warnings
-from typing import Optional, Dict, Tuple, List
 from pathlib import Path
+from typing import Dict, List, Optional, Tuple
 
-import pandas as pd
 import matplotlib.pyplot as plt
-from prophet import Prophet
-from sklearn.metrics import mean_squared_error
+import numpy as np
 import optuna
+import pandas as pd
+from prophet import Prophet
 from prophet.diagnostics import cross_validation, performance_metrics
+from sklearn.metrics import mean_absolute_error, mean_squared_error
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+)
+logger = logging.getLogger(__name__)
 
 
 class WeatherForecaster:
     """A class for weather temperature forecasting using Prophet."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize the forecaster with default settings."""
-        self.model = None
-        self.forecast = None
-        self.training_data = None
+        self.model: Optional[Prophet] = None
+        self.forecast: Optional[pd.DataFrame] = None
+        self.training_data: Optional[pd.DataFrame] = None
 
     def load_data(self, filepath: str) -> pd.DataFrame:
         """
         Load and preprocess weather dataset from a CSV file.
 
         Args:
-            filepath: Path to the input CSV file
+            filepath: Path to the input CSV file.
 
         Returns:
-            Cleaned DataFrame with datetime index and temperature column
+            Cleaned DataFrame with datetime index and temperature column.
+
+        Raises:
+            ValueError: If input data is invalid or missing required columns.
+            FileNotFoundError: If input file doesn't exist.
         """
         try:
-            # Use low_memory=False for faster CSV parsing
-            df = pd.read_csv(filepath, low_memory=False)
+            filepath = Path(filepath)
+            if not filepath.exists():
+                raise FileNotFoundError(f"Input file not found: {filepath}")
 
-            # Convert to datetime with infer_datetime_format for speed
-            df['ds'] = pd.to_datetime(df['ds'], infer_datetime_format=True)
+            # Read with optimized parameters
+            df = pd.read_csv(
+                filepath,
+                usecols=["ds", "temperature_celsius"],  # Only read needed columns
+                parse_dates=["ds"],
+                low_memory=False,
+            )
 
-            # Basic data validation
-            if 'temperature_celsius' not in df.columns:
-                raise ValueError("Input data must contain 'temperature_celsius' column")
+            # Validate data
+            if len(df) < 30:
+                raise ValueError("Insufficient data - need at least 30 observations")
+            if df["temperature_celsius"].isna().sum() > len(df) * 0.1:  # 10% threshold
+                raise ValueError("Too many missing temperature values")
 
-            # Downcast numeric columns
-            df['temperature_celsius'] = pd.to_numeric(df['temperature_celsius'],
-                                                      downcast='float')
+            # Optimize memory usage
+            df["temperature_celsius"] = pd.to_numeric(
+                df["temperature_celsius"], downcast="float"
+            )
+            df.rename(columns={"temperature_celsius": "y"}, inplace=True)
 
             df.rename(columns={'temperature_celsius': 'y'}, inplace=True)
             return df
 
-        except Exception as e:
-            raise ValueError(f"Error loading data: {str(e)}") from e
+        except pd.errors.EmptyDataError as e:
+            raise ValueError("Input file is empty") from e
+        except pd.errors.ParserError as e:
+            raise ValueError("Invalid CSV format") from e
 
     def _instantiate_model(self, params: Optional[Dict] = None) -> Prophet:
         """
         Create a Prophet model with specified parameters.
 
         Args:
-            params: Dictionary of Prophet parameters
+            params: Dictionary of Prophet parameters to override defaults.
 
         Returns:
-            Configured Prophet model instance
+            Configured Prophet model instance.
         """
         default_params = {
             'changepoint_prior_scale': 0.05,
@@ -99,175 +126,185 @@ class WeatherForecaster:
 
     def _should_use_regressor(self, df: pd.DataFrame, regressor_col: str) -> bool:
         """
-        Determine if a regressor should be included based on correlation.
+        Determine if a regressor should be included based on data quality and correlation.
 
         Args:
-            df: DataFrame containing the data
-            regressor_col: Column name to check as potential regressor
+            df: DataFrame containing the data.
+            regressor_col: Column name to check as potential regressor.
 
         Returns:
-            Boolean indicating whether to use the regressor
+            bool: True if regressor should be used, False otherwise.
         """
         if regressor_col not in df.columns:
-            warnings.warn(
-                f"Regressor {regressor_col} not in data",
-                UserWarning
+            logger.warning("Regressor %s not in data", regressor_col)
+            return False
+
+        # Check for sufficient non-null values
+        if df[regressor_col].isna().mean() > 0.2:  # 20% missing threshold
+            logger.warning(
+                "Regressor %s has too many missing values (%.1f%%)",
+                regressor_col,
+                df[regressor_col].isna().mean() * 100,
             )
             return False
 
-        corr = df[[regressor_col, 'y']].corr().loc[regressor_col, 'y']
+        # Check correlation
+        corr = df[[regressor_col, "y"]].corr().loc[regressor_col, "y"]
         if abs(corr) < 0.3:  # Moderate correlation threshold
-            warnings.warn(
-                f"Regressor '{regressor_col}' ignored due to weak correlation (r={corr:.2f})",
-                UserWarning
+            logger.warning(
+                "Regressor '%s' ignored due to weak correlation (r=%.2f)",
+                regressor_col,
+                corr,
             )
             return False
+
         return True
 
-    def _early_stopping_callback(self, study, trial):  # exit if results are not improving
-        if trial.number > 100 and study.best_value > 2.0:  # Adjust threshold
+    def _early_stopping_callback(self, study: optuna.Study, trial: optuna.Trial) -> None:
+        """Stop optimization early if results aren't improving."""
+        if trial.number > 100 and study.best_value > 2.0:
             raise optuna.exceptions.TrialPruned()
 
-    def _tune_hyperparameters(self, df: pd.DataFrame, n_trials: int = 30) -> Dict:
+    def _tune_hyperparameters(
+        self, df: pd.DataFrame, n_trials: int = 30
+    ) -> Dict[str, float]:
         """
         Optimize Prophet hyperparameters using Optuna.
 
         Args:
-            df: Training data
-            n_trials: Number of optimization trials
+            df: Training data.
+            n_trials: Number of optimization trials.
 
         Returns:
-            Dictionary of optimized parameters
+            Dictionary of optimized parameters.
         """
-
-        def objective(trial):
+        def objective(trial: optuna.Trial) -> float:
             params = {
-                'changepoint_prior_scale': trial.suggest_float(
-                    'changepoint_prior_scale', 0.001, 0.5, log=True),
-                'seasonality_prior_scale': trial.suggest_float(
-                    'seasonality_prior_scale', 0.1, 20.0),
-                'seasonality_mode': trial.suggest_categorical(
-                    'seasonality_mode', ['additive', 'multiplicative']),  # testing both modes to determine which
+                "changepoint_prior_scale": trial.suggest_float(
+                    "changepoint_prior_scale", 0.001, 0.5, log=True
+                ),
+                "seasonality_prior_scale": trial.suggest_float(
+                    "seasonality_prior_scale", 0.1, 20.0
+                ),
+                # testing both modes to determine which
                 # fits the temperature data better
-                'holidays_prior_scale': trial.suggest_float(
-                    'holidays_prior_scale', 0.1, 10.0)  # controls how strongly holidays affect temperatures
+                "seasonality_mode": trial.suggest_categorical(
+                    "seasonality_mode", ["additive", "multiplicative"]
+                ),
+                # controls how strongly holidays affect temperatures
+                "holidays_prior_scale": trial.suggest_float(
+                    "holidays_prior_scale", 0.1, 10.0
+                ),
             }
 
             model = self._instantiate_model(params)
             model.fit(df)
 
-            # Calculate safe cross-validation parameters
-            min_date = df['ds'].min()
-            max_date = df['ds'].max()
+            # Dynamic cross-validation parameters
+            min_date, max_date = df["ds"].min(), df["ds"].max()
             total_days = (max_date - min_date).days
 
-            # Perform Cross-validation, Dynamic configuration based on data size
-            if total_days <= 366:  # ~1 year of data
-                initial = '300 days'  # Train on first 300 days (~10 months)
-                period = '30 days'  # Create monthly validation folds
-                horizon = '30 days'  # Validate on last 30 days
-            else:
-                initial = '365 days'  # Full year base
-                period = '90 days'
-                horizon = '30 days'
+            initial = "300 days" if total_days <= 366 else "365 days"
+            period = "30 days" if total_days <= 366 else "90 days"
+            horizon = "30 days"
 
             df_cv = cross_validation(
                 model,
                 initial=initial,
                 period=period,
                 horizon=horizon,
-                parallel="processes"
+                parallel="processes",
             )
 
-            return performance_metrics(df_cv)['rmse'].mean()
+            return performance_metrics(df_cv)["rmse"].mean()
 
-        study = optuna.create_study(direction='minimize',
-                                    sampler=optuna.samplers.TPESampler(
-                                        n_startup_trials=10,  # First 10 trials random
-                                        multivariate=True  # Smarter parameter combinations
-                                    )
-                                    )
-        study.optimize(objective, n_trials=n_trials, show_progress_bar=True, callbacks=[self._early_stopping_callback],
-                       n_jobs=4  # Parallel trials (if you have multiple cores)
-                       )
+        study = optuna.create_study(
+            direction="minimize",
+            sampler=optuna.samplers.TPESampler(
+                n_startup_trials=min(10, n_trials // 3),  # 1/3 of trials for exploration
+                multivariate=True,
+            ),
+        )
+        study.optimize(
+            objective,
+            n_trials=n_trials,
+            callbacks=[self._early_stopping_callback],
+            n_jobs=-1,  # Use all available cores
+        )
+        logger.info("Best trial: %s", study.best_trial.number)
+        logger.info("Best RMSE: %.4f", study.best_value)
         return study.best_params
 
     def train(
-            self,
-            df: pd.DataFrame,
-            use_regressor: Optional[List[str]] = None,
-            tune_hyperparameters: bool = True,
-            n_trials: int = 30
+        self,
+        df: pd.DataFrame,
+        use_regressor: Optional[List[str]] = None,
+        tune_hyperparameters: bool = True,
+        n_trials: int = 30,
     ) -> None:
         """
         Train the forecasting model.
 
         Args:
-            df: Training data
-            use_regressor: List of columns to consider as regressors. If flag is active but no regressor defined, defaults will be tried
-            tune_hyperparameters: Whether to optimize model parameters
-            n_trials: Number of hyperparameter optimization trials
+            df: Training data.
+            use_regressor: List of columns to consider as regressors.
+            tune_hyperparameters: Whether to optimize model parameters.
+            n_trials: Number of hyperparameter optimization trials.
 
         Raises:
-            ValueError: If training data is insufficient
+            ValueError: If training data is insufficient.
         """
-        if len(df) < 30:
-            raise ValueError("Insufficient data - need at least 30 observations")
-
+        logger.info("Starting model training with %d data points", len(df))
         self.training_data = df.copy()
 
         # Hyperparameter tuning
-        best_params = self._tune_hyperparameters(df, n_trials) if tune_hyperparameters else None
-
-        # Initialize model with best parameters
+        best_params = (
+            self._tune_hyperparameters(df, n_trials) if tune_hyperparameters else None
+        )
         self.model = self._instantiate_model(best_params)
 
-        # Add regressors if requested and valid
-        if isinstance(use_regressor, list):  # if regressors requested
-            # Pre-filter valid regressors before adding
+        # Add validated regressors
+        if use_regressor is not None:
             valid_regressors = [
-                col for col in (use_regressor or ['humidity', 'pressure'])
+                col
+                for col in use_regressor
                 if self._should_use_regressor(df, col)
-            ]
-            for col in valid_regressors[:3]:  # Limit to top 3 regressors
-                self.model.add_regressor(col)
-            # if len(use_regressor) > 0:  # if regressors defined
-            #     for regressor_col in use_regressor:
-            #         if self._should_use_regressor(df, regressor_col):
-            #             self.model.add_regressor(regressor_col)
-            # else:  # try defaults
-            #     if self._should_use_regressor(df, 'humidity'):
-            #         self.model.add_regressor('humidity')
-            #     if self._should_use_regressor(df, 'pressure'):
-            #         self.model.add_regressor('pressure')
+            ][:3]  # Limit to top 3 regressors
 
-        # Fit the model
+            for col in valid_regressors:
+                self.model.add_regressor(col)
+                logger.info("Added regressor: %s", col)
+
         self.model.fit(df)
+        logger.info("Model training completed")
 
     def predict(self, periods: int = 7) -> Tuple[pd.DataFrame, pd.DataFrame]:
         """
         Generate forecast for future periods.
 
         Args:
-            periods: Number of future periods to forecast
+            periods: Number of future periods to forecast.
 
         Returns:
-            Tuple of (future dataframe, forecast dataframe)
-        """
-        if not self.model:
-            raise ValueError("Model must be trained before making predictions")
+            Tuple of (future dataframe, forecast dataframe).
 
-        # Create future dataframe with regressors if they exist
+        Raises:
+            ValueError: If model hasn't been trained.
+        """
+        if self.model is None:
+            raise ValueError("Model must be trained before prediction")
+
+        logger.info("Generating %d-day forecast", periods)
         future = self.model.make_future_dataframe(periods=periods)
 
-        # Handle regressors by forward-filling
-        if hasattr(self.model, 'extra_regressors'):
+        # Handle regressors if present
+        if hasattr(self.model, "extra_regressors"):
             for regressor in self.model.extra_regressors:
                 if regressor in self.training_data.columns:
                     future = future.merge(
-                        self.training_data[['ds', regressor]],
-                        on='ds',
-                        how='left'
+                        self.training_data[["ds", regressor]],
+                        on="ds",
+                        how="left",
                     )
                     future[regressor] = future[regressor].ffill()
 
@@ -279,87 +316,142 @@ class WeatherForecaster:
         Evaluate model performance on training data.
 
         Returns:
-            Dictionary of evaluation metrics
+            Dictionary of evaluation metrics.
+
+        Raises:
+            ValueError: If forecast or training data isn't available.
         """
-        if len(self.forecast) <= 0 or len(self.training_data) <= 0:
+        if self.forecast is None or self.training_data is None:
             raise ValueError("Model must be trained and forecast generated")
 
         merged = pd.merge(
-            self.training_data[['ds', 'y']],
-            self.forecast[['ds', 'yhat']],
-            on='ds'
+            self.training_data[["ds", "y"]],
+            self.forecast[["ds", "yhat"]],
+            on="ds",
         )
 
+        y_true = merged["y"]
+        y_pred = merged["yhat"]
+
         return {
-            'mse': mean_squared_error(merged['y'], merged['yhat']),
-            'mae': (merged['y'] - merged['yhat']).abs().mean(),
-            'rmse': mean_squared_error(merged['y'], merged['yhat'], squared=False)
+            "mse": mean_squared_error(y_true, y_pred),
+            "mae": mean_absolute_error(y_true, y_pred),
+            "rmse": np.sqrt(mean_squared_error(y_true, y_pred)),
+            "mape": np.mean(np.abs((y_true - y_pred) / y_true)) * 100,
         }
 
-    def plot_forecast(self, df, plot_components: bool = False, last_n_days: int = 7):
+    def plot_forecast(
+        self, plot_components: bool = False, last_n_days: int = 7
+    ) -> None:
         """
-        Visualize the forecast results with option to plot components.
+        Visualize the forecast results.
 
         Args:
-            df: Historical data DataFrame
-            plot_components: Whether to show trend/seasonality components
-            last_n_days: Number of most recent forecast days to plot (default: 7)
+            plot_components: Whether to show trend/seasonality components.
+            last_n_days: Number of most recent days to highlight.
+
+        Raises:
+            ValueError: If forecast isn't available.
         """
-        if len(self.forecast) <= 0:
+        if self.forecast is None or self.training_data is None:
             raise ValueError("No forecast available to plot")
 
-        # Create main plot (full range)
+        # Main forecast plot
         plt.figure(figsize=(12, 6))
-        plt.plot(df['ds'], df['y'], label='Actuals', color='black')
-        plt.plot(self.forecast['ds'], self.forecast['yhat'], label='Forecast', color='blue')
-        plt.fill_between(
-            self.forecast['ds'], self.forecast['yhat_lower'], self.forecast['yhat_upper'],
-            color='blue', alpha=0.2, label='Confidence Interval')
+        forecast_subset = self.forecast.iloc[-last_n_days:]
 
-        plt.xlabel('Date')
-        plt.ylabel('Temperature (°C)')
-        plt.title('Actuals vs. Forecast')
+        plt.plot(
+            forecast_subset["ds"],
+            forecast_subset["yhat"],
+            label="Forecast",
+            color="blue",
+            marker="o",
+        )
+        plt.fill_between(
+            forecast_subset["ds"],
+            forecast_subset["yhat_lower"],
+            forecast_subset["yhat_upper"],
+            color="blue",
+            alpha=0.2,
+            label="Confidence Interval",
+        )
+        plt.title(f"{last_n_days}-Day Temperature Forecast")
+        plt.xlabel("Date")
+        plt.ylabel("Temperature (°C)")
+        plt.legend()
+        plt.grid(True)
+        plt.tight_layout()
+        plt.show()
+
+        # Historical vs forecast plot
+        plt.figure(figsize=(12, 6))
+        plt.plot(
+            self.training_data["ds"],
+            self.training_data["y"],
+            label="Historical",
+            color="black",
+        )
+        plt.plot(
+            self.forecast["ds"],
+            self.forecast["yhat"],
+            label="Forecast",
+            color="blue",
+        )
+        plt.fill_between(
+            self.forecast["ds"],
+            self.forecast["yhat_lower"],
+            self.forecast["yhat_upper"],
+            color="blue",
+            alpha=0.2,
+        )
+        plt.title("Historical vs Forecasted Temperatures")
+        plt.xlabel("Date")
+        plt.ylabel("Temperature (°C)")
         plt.legend()
         plt.grid(True)
         plt.show()
 
-        # Create second plot (recent days only)
+        # Recent history + forecast
         if last_n_days and len(self.forecast) > last_n_days:
             plt.figure(figsize=(12, 6))
+            cutoff_date = self.forecast["ds"].iloc[-1] - pd.Timedelta(days=2 * last_n_days)
 
-            # Define start date for plotting
-            start_date = self.forecast['ds'].iloc[-1] - pd.Timedelta(days=2 * last_n_days)
+            hist_subset = self.training_data[self.training_data["ds"] >= cutoff_date]
+            fcst_subset = self.forecast[self.forecast["ds"] >= cutoff_date]
 
-            # Historical actuals starting from start_date
-            last_history = df[df['ds'] >= start_date]
+            merged = pd.merge(fcst_subset[['ds', 'yhat', 'yhat_lower', 'yhat_upper']], hist_subset[['ds', 'y']], on='ds',
+                              how='left')
+            merged.rename(columns={'y': 'actual', 'yhat': 'forecast'}, inplace=True)
+            merged['diff'] = merged['forecast'] - merged['actual']
+            print(merged.tail(100))
 
-            # Forecast starting from start_date
-            extended_forecast = self.forecast[self.forecast['ds'] >= start_date]
-
-            # Plot actuals
-            plt.plot(last_history['ds'], last_history['y'],
-                     label='Actuals', color='black', marker='o')
-
-            # Plot forecast
-            plt.plot(extended_forecast['ds'], extended_forecast['yhat'],
-                     label='Forecast', color='blue', marker='o')
-
-            plt.fill_between(
-                extended_forecast['ds'],
-                extended_forecast['yhat_lower'],
-                extended_forecast['yhat_upper'],
-                color='blue', alpha=0.2, label='Confidence Interval'
+            plt.plot(
+                hist_subset["ds"],
+                hist_subset["y"],
+                label="Historical",
+                color="black",
+                marker="o",
             )
-
-            plt.xlabel('Date')
-            plt.ylabel('Temperature (°C)')
-            plt.title(f'Forecast For Next {last_n_days} Days')
+            plt.plot(
+                fcst_subset["ds"],
+                fcst_subset["yhat"],
+                label="Forecast",
+                color="blue",
+                marker="o",
+            )
+            plt.fill_between(
+                fcst_subset["ds"],
+                fcst_subset["yhat_lower"],
+                fcst_subset["yhat_upper"],
+                color="blue",
+                alpha=0.2,
+            )
+            plt.title(f"Last {2 * last_n_days} Days + Forecast")
+            plt.xlabel("Date")
+            plt.ylabel("Temperature (°C)")
             plt.legend()
             plt.grid(True)
             plt.tight_layout()
-
-            plt.gca().xaxis.set_major_locator(plt.MaxNLocator(nbins=6))  # avoid overlap of labels
-
             plt.show()
 
         if plot_components:
@@ -367,105 +459,101 @@ class WeatherForecaster:
             plt.show()
 
 
-def parse_arguments():
+def parse_arguments() -> argparse.Namespace:
     """Parse and validate command line arguments."""
     parser = argparse.ArgumentParser(
         description="Weather Temperature Forecasting with Prophet",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
 
     parser.add_argument(
-        '--input',
+        "--input",
         type=str,
         required=True,
-        help='Path to input CSV file with columns: ds, temperature_celsius'
+        help="Path to input CSV file with columns: ds, temperature_celsius",
     )
     parser.add_argument(
-        '--output',
+        "--output",
         type=str,
-        help='Path to save forecast results (CSV)'
+        default=None,
+        help="Path to save forecast results (CSV)",
     )
     parser.add_argument(
-        '--periods',
+        "--periods",
         type=int,
         default=7,
-        help='Number of days to forecast'
+        help="Number of days to forecast",
     )
     parser.add_argument(
-        '--use-regressor',
-        nargs='*',  # Accept 0 or more arguments
+        "--use-regressor",
+        nargs="*",
         default=None,
-        help='Columns to use as additional regressors'
+        help="Columns to use as additional regressors",
     )
     parser.add_argument(
-        '--no-tuning',
-        action='store_true',
-        help='Skip hyperparameter tuning'
+        "--no-tuning",
+        action="store_true",
+        help="Skip hyperparameter tuning",
     )
     parser.add_argument(
-        '--trials',
+        "--trials",
         type=int,
         default=30,
-        help='Number of hyperparameter optimization trials'
+        help="Number of hyperparameter optimization trials",
     )
     parser.add_argument(
-        '--plot-components',
-        action='store_true',
-        help='Whether to show component plots'
+        "--plot-components",
+        action="store_true",
+        help="Show component plots",
     )
 
     return parser.parse_args()
 
 
-def main():
+def main() -> int:
     """Main execution function."""
     args = parse_arguments()
 
-    forecaster = WeatherForecaster()
+    try:
+        forecaster = WeatherForecaster()
+        df = forecaster.load_data(args.input)
 
-    # try:
-    # Load and validate data
-    df = forecaster.load_data(args.input)
-
-    # Train model
-    forecaster.train(
-        df,
-        use_regressor=args.use_regressor,
-        tune_hyperparameters=not args.no_tuning,
-        n_trials=args.trials
-    )
-
-    # Generate forecast
-    future, forecast = forecaster.predict(periods=args.periods)
-
-    # Show evaluation metrics
-    # metrics = forecaster.evaluate()
-    # print("\nModel Performance Metrics:")
-    # for metric, value in metrics.items():
-    #     print(f"{metric.upper()}: {value:.2f}")
-
-    merged = pd.merge(forecast[['ds', 'yhat', 'yhat_lower', 'yhat_upper']], df[['ds', 'y']], on='ds', how='left')
-    merged.rename(columns={'y': 'actual'}, inplace=True)
-    merged['diff'] = merged['yhat'] - merged['actual']
-    print(merged.tail(100))
-
-    # Visualize results
-    forecaster.plot_forecast(df, args.plot_components, last_n_days=args.periods)
-
-    # Save results if requested
-    if args.output:
-        output_path = Path(args.output)
-        forecast[['ds', 'yhat']].tail(args.periods).to_csv(
-            output_path,
-            index=False
+        # Train model
+        forecaster.train(
+            df,
+            use_regressor=args.use_regressor,
+            tune_hyperparameters=not args.no_tuning,
+            n_trials=args.trials,
         )
-        print(f"\nForecast saved to {output_path.resolve()}")
 
-    # except Exception as e:
-    #     print(f"\nError: {str(e)}")
-    #     return 1
+        # Generate forecast
+        future, forecast = forecaster.predict(periods=args.periods)
 
-    return 0
+        # Print evaluation metrics
+        metrics = forecaster.evaluate()
+        logger.info("\nModel Performance Metrics:")
+        for metric, value in metrics.items():
+            logger.info("%s: %.2f", metric.upper(), value)
+
+        # Visualize results
+        forecaster.plot_forecast(
+            plot_components=args.plot_components,
+            last_n_days=args.periods,
+        )
+
+        # Save results if requested
+        if args.output:
+            output_path = Path(args.output)
+            forecast[["ds", "yhat"]].tail(args.periods).to_csv(
+                output_path, index=False
+            )
+            logger.info("Forecast saved to %s", output_path.resolve())
+
+        return 0
+
+    except Exception as e:
+        logger.error("Error: %s", str(e), exc_info=True)
+        return 1
 
 
 if __name__ == "__main__":
