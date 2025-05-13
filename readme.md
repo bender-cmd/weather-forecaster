@@ -107,12 +107,13 @@ Column	            Description
 
 ds	                Date (YYYY-MM-DD)
 temperature_celsius	Daily average temperature (°C)
+humidity                Dampness
 ```
 Example:
 ```
-ds,temperature_celsius
-2024-01-01,26.1
-2024-01-02,25.4
+ds,temperature_celsius,humidity
+2024-01-01,26.1,77
+2024-01-02,25.4,82
 ...
 ```
 
