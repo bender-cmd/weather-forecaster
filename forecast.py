@@ -35,8 +35,7 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error
 
 # Configure logging
 logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    format="%(asctime)s [%(levelname)s] %(message)s", level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
@@ -383,12 +382,12 @@ class WeatherForecaster:
         plt.tight_layout()
         plt.show()
 
-        # Historical vs forecast plot
+        # Actual vs forecast plot
         plt.figure(figsize=(12, 6))
         plt.plot(
             self.training_data["ds"],
             self.training_data["y"],
-            label="Historical",
+            label="Actual",
             color="black",
         )
         plt.plot(
@@ -404,7 +403,7 @@ class WeatherForecaster:
             color="blue",
             alpha=0.2,
         )
-        plt.title("Historical vs Forecasted Temperatures")
+        plt.title("Actual vs Forecast Temperatures")
         plt.xlabel("Date")
         plt.ylabel("Temperature (°C)")
         plt.legend()
@@ -416,19 +415,19 @@ class WeatherForecaster:
             plt.figure(figsize=(12, 6))
             cutoff_date = self.forecast["ds"].iloc[-1] - pd.Timedelta(days=2 * last_n_days)
 
-            hist_subset = self.training_data[self.training_data["ds"] >= cutoff_date]
+            actu_subset = self.training_data[self.training_data["ds"] >= cutoff_date]
             fcst_subset = self.forecast[self.forecast["ds"] >= cutoff_date]
 
-            merged = pd.merge(fcst_subset[['ds', 'yhat', 'yhat_lower', 'yhat_upper']], hist_subset[['ds', 'y']], on='ds',
+            merged = pd.merge(fcst_subset[['ds', 'yhat', 'yhat_lower', 'yhat_upper']], actu_subset[['ds', 'y']], on='ds',
                               how='left')
-            merged.rename(columns={'y': 'actual', 'yhat': 'forecast'}, inplace=True)
+            merged.rename(columns={'y': 'actual', 'yhat': 'forecast', 'ds': 'date'}, inplace=True)
             merged['diff'] = merged['forecast'] - merged['actual']
             print(merged.tail(100))
 
             plt.plot(
-                hist_subset["ds"],
-                hist_subset["y"],
-                label="Historical",
+                actu_subset["ds"],
+                actu_subset["y"],
+                label="Actual",
                 color="black",
                 marker="o",
             )
@@ -510,6 +509,13 @@ def parse_arguments() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def save_forecast_to_csv(forecast: pd.DataFrame, output_path: Path, periods: int) -> None:
+    """Save forecast results to a CSV file."""
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    forecast[["ds", "yhat"]].tail(periods).to_csv(output_path, index=False)
+    logger.info("Forecast saved to %s", output_path.resolve())
+
+
 def main() -> int:
     """Main execution function."""
     args = parse_arguments()
@@ -527,7 +533,7 @@ def main() -> int:
         )
 
         # Generate forecast
-        future, forecast = forecaster.predict(periods=args.periods)
+        _, forecast = forecaster.predict(periods=args.periods)
 
         # Print evaluation metrics
         metrics = forecaster.evaluate()
@@ -543,11 +549,7 @@ def main() -> int:
 
         # Save results if requested
         if args.output:
-            output_path = Path(args.output)
-            forecast[["ds", "yhat"]].tail(args.periods).to_csv(
-                output_path, index=False
-            )
-            logger.info("Forecast saved to %s", output_path.resolve())
+            save_forecast_to_csv(forecast, Path(args.output), args.periods)
 
         return 0
 

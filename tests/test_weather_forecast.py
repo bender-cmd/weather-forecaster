@@ -25,8 +25,8 @@ def sample_df():
 def test_load_data(tmp_path):
     # Create a sample CSV
     data = pd.DataFrame({
-        'ds': pd.date_range(start='2023-01-01', periods=10),
-        'temperature_celsius': range(10)
+        'ds': pd.date_range(start='2023-01-01', periods=100),
+        'temperature_celsius': range(100)
     })
     file = tmp_path / "sample.csv"
     data.to_csv(file, index=False)
@@ -36,7 +36,7 @@ def test_load_data(tmp_path):
 
     assert 'ds' in df.columns
     assert 'y' in df.columns
-    assert len(df) == 10  # why 10?
+    assert len(df) == 100
     assert pd.api.types.is_datetime64_any_dtype(df['ds'])
 
 
@@ -67,10 +67,11 @@ def test_evaluate_metrics(sample_df):
     assert all(isinstance(value, float) for value in metrics.values())
 
 
-def test_use_invalid_regressor_warning(sample_df):
+def test_use_invalid_regressor_warning(sample_df, caplog):
     forecaster = WeatherForecaster()
-    with pytest.warns(UserWarning, match="Regressor invalid_regressor not in data"):
+    with caplog.at_level("WARNING"):
         forecaster.train(sample_df, use_regressor=['invalid_regressor'], tune_hyperparameters=False)
+    assert "Regressor invalid_regressor not in data" in caplog.text
 
 
 def test_should_use_regressor_valid(sample_df):
