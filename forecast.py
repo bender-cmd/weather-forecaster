@@ -11,12 +11,12 @@ Usage:
 Options:
     --input <file.csv>          Path to input CSV (required).
     --output <forecast.csv>     Save forecast to this file [default: None].
-    --periods <days>           Days to forecast [default: 7].
+    --periods <days>            Days to forecast [default: 7].
     --use-regressor <regressor> Regressors to use [default: humidity, pressure].
     --plot-components           Show component plots.
-    --no-tuning                Skip hyperparameter tuning.
-    --trials <n>               Number of hyperparameter trials [default: 30].
-    -h --help                  Show this help.
+    --no-tuning                 Skip hyperparameter tuning.
+    --trials <n>                Number of hyperparameter trials [default: 30].
+    -h --help                   Show this help.
 """
 
 import argparse
@@ -39,10 +39,55 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def validate_forecast(forecast: pd.DataFrame) -> pd.DataFrame:
+    """Ensure forecast contains required columns and valid data."""
+
+    required_columns = ['ds', 'yhat', 'yhat_lower', 'yhat_upper']
+
+    # Check for missing dates assuming daily frequency
+    forecast = forecast.sort_values("ds")  # Ensure time order
+    expected_dates = pd.date_range(start=forecast["ds"].min(), end=forecast["ds"].max(), freq='D')
+    missing_dates = expected_dates.difference(forecast["ds"])
+
+    if not missing_dates.empty:
+        print(f"Missing {len(missing_dates)} dates in daily time series")
+        full_range = pd.date_range(forecast["ds"].min(), forecast["ds"].max(), freq="D")
+
+        # Reindex to full date range first
+        forecast = forecast.set_index("ds").reindex(full_range)
+
+        # Interpolate missing values with forward/backward fill
+        forecast[['yhat', 'yhat_lower', 'yhat_upper']] = forecast[['yhat', 'yhat_lower', 'yhat_upper']].interpolate(
+            method='linear',
+            limit_direction='both'
+        )
+
+        # Fill any remaining NAs at start/end
+        forecast = forecast.fillna(method='ffill').fillna(method='bfill')
+
+        # Reset index and validate
+        forecast = forecast.reset_index().rename(columns={'index': 'ds'})
+
+    # Check for missing columns
+    missing_columns = [col for col in required_columns if col not in forecast.columns]
+    if missing_columns:
+        raise ValueError(f"Forecast missing required columns: {missing}")
+
+    # Check for NaN values
+    if forecast[['yhat', 'yhat_lower', 'yhat_upper']].isna().any().any():
+        raise ValueError("Forecast contains NaN values in critical columns")
+
+    # Validate dates (if applicable)
+    if not pd.api.types.is_datetime64_any_dtype(forecast['ds']):
+        raise TypeError("Column 'ds' must be datetime type")
+
+    return forecast
+
+
 class WeatherForecaster:
     """A class for weather temperature forecasting using Prophet."""
     _DEFAULT_PROPHET_PARAMS = {
-        'changepoint_prior_scale': 0.05,
+        'changepoint_prior_scale': 0.05,  # Controls how flexibly the trend can adapt to sudden changes
         'seasonality_prior_scale': 10.0,  # Controls how strongly seasonal patterns influence forecasts
         'seasonality_mode': 'additive',  # Seasonality effects are added to trend (constant magnitude)
         # Auto - detects patterns at these frequencies
@@ -80,9 +125,10 @@ class WeatherForecaster:
             # Read with optimized parameters
             df = pd.read_csv(
                 filepath,
-                usecols=["ds", "temperature_celsius"],  # Only read needed columns
+                usecols=["ds", "temperature_celsius", "humidity"],  # Only read needed columns
                 parse_dates=["ds"],
-                low_memory=False,
+                low_memory=False,  # Better dtype inference
+                dtype={"temperature_celsius": "float32"}  # Explicit dtype saves memory
             )
 
             # Validate data
@@ -95,7 +141,6 @@ class WeatherForecaster:
             df["temperature_celsius"] = pd.to_numeric(
                 df["temperature_celsius"], downcast="float"
             )
-            df.rename(columns={"temperature_celsius": "y"}, inplace=True)
 
             df.rename(columns={'temperature_celsius': 'y'}, inplace=True)
             return df
@@ -108,8 +153,6 @@ class WeatherForecaster:
     @staticmethod
     def __instantiate_model(params: Optional[Dict] = None) -> Prophet:
         """
-        Private factory method for Prophet models.
-
         Creates a Prophet model with specified parameters.
 
         Args:
@@ -133,7 +176,7 @@ class WeatherForecaster:
         Determine if a regressor should be included based on data quality and correlation.
 
         Args:
-            df: DataFrame containing the data.
+            df: DataFrame containing training data.
             regressor_col: Column name to check as potential regressor.
 
         Returns:
@@ -161,7 +204,6 @@ class WeatherForecaster:
                 corr,
             )
             return False
-
         return True
 
     @staticmethod
@@ -224,9 +266,12 @@ class WeatherForecaster:
 
             return performance_metrics(df_cv)["rmse"].mean()
 
+        # Exploration helps TPE build an initial understanding of the parameter space
+        # First 1/3 Trials - Randomly explore parameter space
+        # Subsequent Trials - Intelligently exploit promising regions
         study = optuna.create_study(
             direction="minimize",
-            sampler=optuna.samplers.TPESampler(
+            sampler=optuna.samplers.TPESampler(  # Tree-structured Parzen Estimator
                 n_startup_trials=min(10, n_trials // 3),  # 1/3 of trials for exploration
                 multivariate=True,
             ),
@@ -343,7 +388,7 @@ class WeatherForecaster:
             "mse": mean_squared_error(y_true, y_pred),
             "mae": mean_absolute_error(y_true, y_pred),
             "rmse": np.sqrt(mean_squared_error(y_true, y_pred)),
-            "mape": np.mean(np.abs((y_true - y_pred) / y_true)) * 100,
+            "mape": np.mean(np.abs((y_true - y_pred) / y_true)) * 100,  # Mean Absolute Percentage Error
         }
 
     def plot_forecast(
@@ -542,6 +587,8 @@ def main() -> int:
 
         # Generate forecast
         _, forecast = forecaster.predict(periods=args.periods)
+
+        forecast = validate_forecast(forecast)
 
         # Print evaluation metrics
         metrics = forecaster.evaluate()
