@@ -26,7 +26,8 @@ def test_load_data(tmp_path):
     # Create a sample CSV
     data = pd.DataFrame({
         'ds': pd.date_range(start='2023-01-01', periods=100),
-        'temperature_celsius': range(100)
+        'temperature_celsius': range(100),
+        'humidity': range(100)
     })
     file = tmp_path / "sample.csv"
     data.to_csv(file, index=False)
