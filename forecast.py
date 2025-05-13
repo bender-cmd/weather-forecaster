@@ -41,6 +41,15 @@ logger = logging.getLogger(__name__)
 
 class WeatherForecaster:
     """A class for weather temperature forecasting using Prophet."""
+    _DEFAULT_PROPHET_PARAMS = {
+        'changepoint_prior_scale': 0.05,
+        'seasonality_prior_scale': 10.0,  # Controls how strongly seasonal patterns influence forecasts
+        'seasonality_mode': 'additive',  # Seasonality effects are added to trend (constant magnitude)
+        # Auto - detects patterns at these frequencies
+        'daily_seasonality': True,
+        'weekly_seasonality': True,
+        'yearly_seasonality': True
+    }
 
     def __init__(self) -> None:
         """Initialize the forecaster with default settings."""
@@ -48,7 +57,8 @@ class WeatherForecaster:
         self.forecast: Optional[pd.DataFrame] = None
         self.training_data: Optional[pd.DataFrame] = None
 
-    def load_data(self, filepath: str) -> pd.DataFrame:
+    @staticmethod
+    def load_data(filepath: str) -> pd.DataFrame:
         """
         Load and preprocess weather dataset from a CSV file.
 
@@ -95,9 +105,12 @@ class WeatherForecaster:
         except pd.errors.ParserError as e:
             raise ValueError("Invalid CSV format") from e
 
-    def _instantiate_model(self, params: Optional[Dict] = None) -> Prophet:
+    @staticmethod
+    def __instantiate_model(params: Optional[Dict] = None) -> Prophet:
         """
-        Create a Prophet model with specified parameters.
+        Private factory method for Prophet models.
+
+        Creates a Prophet model with specified parameters.
 
         Args:
             params: Dictionary of Prophet parameters to override defaults.
@@ -105,24 +118,17 @@ class WeatherForecaster:
         Returns:
             Configured Prophet model instance.
         """
-        default_params = {
-            'changepoint_prior_scale': 0.05,
-            'seasonality_prior_scale': 10.0,  # Controls how strongly seasonal patterns influence forecasts
-            'seasonality_mode': 'additive',  # Seasonality effects are added to trend (constant magnitude)
-            # Auto - detects patterns at these frequencies
-            'daily_seasonality': True,
-            'weekly_seasonality': True,
-            'yearly_seasonality': True
-        }
+        config = WeatherForecaster._DEFAULT_PROPHET_PARAMS.copy()
 
         if params:
-            default_params.update(params)
+            config.update(params)
 
-        model = Prophet(**default_params)
+        model = Prophet(**config)
         model.add_country_holidays(country_name='ZA')  # leverage south african holidays for weather forecasting
         return model
 
-    def _should_use_regressor(self, df: pd.DataFrame, regressor_col: str) -> bool:
+    @staticmethod
+    def _should_use_regressor(df: pd.DataFrame, regressor_col: str) -> bool:
         """
         Determine if a regressor should be included based on data quality and correlation.
 
@@ -158,7 +164,8 @@ class WeatherForecaster:
 
         return True
 
-    def _early_stopping_callback(self, study: optuna.Study, trial: optuna.Trial) -> None:
+    @staticmethod
+    def _early_stopping_callback(study: optuna.Study, trial: optuna.Trial) -> None:
         """Stop optimization early if results aren't improving."""
         if trial.number > 100 and study.best_value > 2.0:
             raise optuna.exceptions.TrialPruned()
@@ -176,6 +183,7 @@ class WeatherForecaster:
         Returns:
             Dictionary of optimized parameters.
         """
+
         def objective(trial: optuna.Trial) -> float:
             params = {
                 "changepoint_prior_scale": trial.suggest_float(
@@ -195,7 +203,7 @@ class WeatherForecaster:
                 ),
             }
 
-            model = self._instantiate_model(params)
+            model = self.__instantiate_model(params)
             model.fit(df)
 
             # Dynamic cross-validation parameters
@@ -234,11 +242,11 @@ class WeatherForecaster:
         return study.best_params
 
     def train(
-        self,
-        df: pd.DataFrame,
-        use_regressor: Optional[List[str]] = None,
-        tune_hyperparameters: bool = True,
-        n_trials: int = 30,
+            self,
+            df: pd.DataFrame,
+            use_regressor: Optional[List[str]] = None,
+            tune_hyperparameters: bool = True,
+            n_trials: int = 30,
     ) -> None:
         """
         Train the forecasting model.
@@ -259,7 +267,7 @@ class WeatherForecaster:
         best_params = (
             self._tune_hyperparameters(df, n_trials) if tune_hyperparameters else None
         )
-        self.model = self._instantiate_model(best_params)
+        self.model = self.__instantiate_model(best_params)
 
         # Add validated regressors
         if use_regressor is not None:
@@ -417,7 +425,8 @@ class WeatherForecaster:
             actu_subset = self.training_data[self.training_data["ds"] >= cutoff_date]
             fcst_subset = self.forecast[self.forecast["ds"] >= cutoff_date]
 
-            merged = pd.merge(fcst_subset[['ds', 'yhat', 'yhat_lower', 'yhat_upper']], actu_subset[['ds', 'y']], on='ds',
+            merged = pd.merge(fcst_subset[['ds', 'yhat', 'yhat_lower', 'yhat_upper']], actu_subset[['ds', 'y']],
+                              on='ds',
                               how='left')
             merged.rename(columns={'y': 'actual', 'yhat': 'forecast', 'ds': 'date'}, inplace=True)
             merged['diff'] = merged['forecast'] - merged['actual']
