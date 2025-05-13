@@ -18,7 +18,7 @@ regressors, and visualizing forecasts with confidence intervals.
 │   └── components.png              # Prophet model components plot
 ├── tests/
 │   └── test_weather_forecast.py    # Unit tests
-└── README.md
+└── readme.md
 ```
 
 ## 📋 Features
@@ -35,6 +35,25 @@ regressors, and visualizing forecasts with confidence intervals.
   - Actual vs forecasted comparisons
   - Trend and seasonality components
 - [ ] Regressor support for additional predictive variables
+
+## 📦 Installation
+
+1. Clone the repository:
+   ```bash
+   git clone https://github.com/bender-cmd/weather-forecaster.git
+   cd weather-forecast
+   git checkout submissions/dalitso
+
+2. Create and activate a virtual environment:
+   ```bash
+   python -m venv venv
+   source venv/bin/activate  # Linux/Mac
+   venv\Scripts\activate    # Windows
+
+3. Install dependencies:
+   ```bash
+   pip install -r requirements.txt
+
 
 ## 🖥️ Usage
 
