@@ -36,12 +36,12 @@ regressors, and visualizing forecasts with confidence intervals.
   - Trend and seasonality components
 - [ ] Regressor support for additional predictive variables
 
-## 📦 Installation
+## 🔧 Installation
 
 1. Clone the repository:
    ```bash
    git clone https://github.com/bender-cmd/weather-forecaster.git
-   cd weather-forecast
+   cd weather-forecaster
    git checkout submissions/dalitso
 
 2. Create and activate a virtual environment:
